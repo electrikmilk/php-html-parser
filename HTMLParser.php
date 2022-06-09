@@ -3,100 +3,123 @@
 class HTMLParser
 {
 	private $file;
-//	private $exclude = ['doctype html'];
+	private $html;
 	private $tree = [];
-	private $open_nodes = [];
 
-	private $matching_tags = [];
-
-	public function __construct($file)
+	/**
+	 * @throws ErrorException
+	 */
+	public function __construct(string $html, bool $file = true)
 	{
-		$this->file = $file;
-		$this->parse();
-//		if(substr($buffer,0,2) === "</") {
-//			continue;
-//		}
-		print_r($this->matching_tags);
-	}
-
-	private function parse() {
-		$this->get_tags();
-		foreach($this->matching_tags as $tag) {
-
-		}
-	}
-
-	private function get_tags()
-	{
-		$document = fopen($this->file, "rb");
-		while (($buffer = fgets($document)) !== false) {
-			// Ignore document declaration
-			if (trim(strtolower($buffer)) === "<!doctype html>") {
-				continue;
+		if ($file === true) {
+			$this->file = $html;
+			if (!file_exists($this->file)) {
+				throw new Error("File $this->file does not exist!");
 			}
-			$line = trim($buffer);
-			preg_match('#(<(.*?)>|<(.*?)>(.*?)</(.*?)>)#', $line, $matches);
-//			// Does this chunk have a tag?
-//			if (str_contains($buffer, "<") && str_contains($buffer, ">")) {
-//				// Is this a closing tag?
-//				$line = trim($buffer);
-//				if (substr($line, 0, 2) === "</") {
-////					$this->finish_node();
-//
-//				} else {
-//					preg_match('#<(.*?)>(.*?)#', $line, $matches);
-////					$this->start_node($line);
-//				}
-//			}
-			$this->matching_tags[] = $matches;
-		}
-	}
-
-	private function start_node(string $buffer)
-	{
-		$node = [];
-		preg_match('#<\/?(.*?)>#', trim($buffer), $matches);
-		if (!$matches[1]) {
-			return;
-		}
-		$attributes = explode(" ", $matches[1]);
-		$i = 0;
-		foreach ($attributes as $attribute) {
-			if ($i !== 0) {
-				$kv = explode("=", $attribute);
-				$node[$kv[0]] = ($kv[1]) ? trim($kv[1], '"') : null;
-			} else {
-				$tag = $attribute;
+			if (!is_readable($this->file)) {
+				throw new Error("File $this->file is not readable!");
 			}
-			++$i;
-		}
-		// Get inner text...
-//		$inner_text = preg_match("#>(.*?)<#", trim($buffer), $matches);
-//		if (isset($matches[1])) {
-//			$node['inner_text'] = $matches[1];
-//		}
-		if (!isset($node['class']) && !isset($node['id'])) {
-			$tag .= "-" . uniqid();
+			if (!$this->count_tags(file_get_contents($this->file))) {
+				throw new Error("One or more tags are not closed");
+			}
 		} else {
-			if (isset($node['class'])) {
-				$tag .= ".{$node['class']}";
-			}
-			if (isset($node['id'])) {
-				$tag .= "#{$node['id']}";
+			$this->html = $html;
+			if (!$this->count_tags($this->html)) {
+				throw new Error("HTML is invalid!");
 			}
 		}
-//		$this->open_nodes[$tag] = [$node];
+		$this->parse();
 	}
 
-	private function finish_node()
+	private function parse(): void
 	{
-//		$tag = $this->current_node[0];
-//		$node = $this->current_node[1];
-//		$this->tree[$tag] = $node;
+		if ($this->file) {
+			$document = fopen($this->file, 'rb');
+			while (($buffer = fgets($document)) !== false) {
+				$this->parse_line($buffer);
+			}
+		} else {
+			$lines = explode(PHP_EOL, $this->html);
+			foreach ($lines as $line) {
+				$this->parse_line();
+			}
+		}
 	}
 
-	public function print_tree()
+	/**
+	 * @param $line
+	 *
+	 * @return void
+	 */
+	private function parse_line($line): void
 	{
-//		echo "<pre>" . print_r($this->tree, true) . "</pre>";
+		$line = trim($line);
+		preg_match('/<(.*?)\/?>((.*?)<\/(.*?)>)?/', $line, $node);
+		if (count($node)) {
+			$attrs = [];
+			$tag = null;
+			if (str_starts_with($node[0], '<!')) {
+				return;
+			}
+			if (isset($node[1])) {
+				if (str_contains($node[1], '/')) {
+					return;
+				}
+				if (str_contains($node[1], ' ') === false) {
+					$tag = $node[1];
+				} else {
+					$segments = explode(' ', $node[1]);
+					$segment_count = count($segments);
+					for ($i = 0; $i < $segment_count; $i++) {
+						if ($i === 0) {
+							$tag = $segments[$i];
+							continue;
+						}
+						if (str_contains($segments[$i], '=')) {
+							$attr = explode('=', $segments[$i]);
+							$key = $attr[0];
+							$value = trim($attr[1], "'\"");
+							$attrs[$key] = $value;
+						} else {
+							$attrs[$segments[$i]] = true;
+						}
+					}
+				}
+			}
+			if (isset($node[3]) && $node[3]) {
+				$attrs['inner'] = $node[3];
+			}
+			if ($tag !== null) {
+				$this->tree[] = [$tag => $attrs];
+			}
+		}
+	}
+
+	private function count_tags($html): bool
+	{
+		$void_tags = ['area', 'base', 'br', 'col', 'command', 'embed', 'hr', 'img', 'input', 'keygen', 'link', 'meta', 'param', 'source', 'track', 'wbr'];
+		$match_open_tags = '/<(?!' . implode('|', $void_tags) . ')[^\/!].*?>/';
+		$match_closed_tags = '/<\/(.*?)>/';
+		preg_match_all($match_open_tags, $html, $open_tags);
+		preg_match_all($match_closed_tags, $html, $closed_tags);
+		return count($open_tags[0]) === count($closed_tags[0]);
+	}
+
+	public function tree(): bool|array
+	{
+		if (count($this->tree)) {
+			return $this->tree;
+		}
+		return false;
+	}
+
+	public function print_tree(): void
+	{
+		print_r($this->tree);
+	}
+
+	public function printf_tree(): void
+	{
+		echo '<pre>' . print_r($this->tree, true) . '</pre>';
 	}
 }
